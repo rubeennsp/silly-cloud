@@ -43,6 +43,7 @@ const rectangleShaders = /*wgsl*/ `
   struct Uniforms {
     resolution : vec2f,
     time : f32,
+    show : f32,
   }
 
   @group(0) @binding(0) var<uniform> u : Uniforms;
@@ -162,7 +163,7 @@ const rectangleShaders = /*wgsl*/ `
     let fogStrength = smoothstep(-0.1, 1., dot(pos, fogDir)) * 0.5;
     let fogColor = vec3f(1, 1, 1);
     let bgColor = mix(skyBlue, fogColor, fogStrength);
-    let color = mix(bgColor, fgColor.rgb, fgColor.a);
+    let color = mix(bgColor, fgColor.rgb, fgColor.a * u.show);
     return vec4f(color, 1);
   }
 `;
@@ -498,6 +499,7 @@ async function main() {
       canvas.width,
       canvas.height,
       time,
+      upload ? 1.0 : 0.0,
     ]))
 
     // Record commands and submit
