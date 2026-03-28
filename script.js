@@ -142,7 +142,7 @@ const rectangleShaders = /*wgsl*/ `
 
   fn renderCloud(pos : vec2f) -> vec4f {
     var dist = sdScene(pos);
-    let speed = vec2f(-0.05, 0);
+    let speed = vec2f(-0.1, 0);
     let noise :f32 = fbm(vec3f(pos + speed * u.time, u.time * 0.05));
     dist += (noise - 0.2) * 0.15;
     let alpha = smoothstep(0.05, -0.05, dist);
@@ -158,7 +158,13 @@ const rectangleShaders = /*wgsl*/ `
     let reso : vec2f = u.resolution;
     let minres : f32 = min(reso.x, reso.y);
     let pos = ndc * reso / minres;
-    let fgColor : vec4f = renderCloud(pos);
+    var offset = u.time * 0.2;
+    let period = reso.x / minres * 4.;
+    offset /= period;
+    offset = fract(offset);
+    offset *= period;
+    offset -= period / 2.;
+    let fgColor : vec4f = renderCloud(pos + vec2f(offset, 0));
     let fogDir = normalize(vec2f(1, -3));
     let fogStrength = smoothstep(-0.1, 1., dot(pos, fogDir)) * 0.5;
     let fogColor = vec3f(1, 1, 1);
