@@ -60,18 +60,39 @@ const rectangleShaders = /*wgsl*/ `
     return output;
   }
 
+  fn sdCircle(pos : vec2f, center : vec2f, rad : f32) -> f32 {
+    return distance(pos, center) - rad; 
+  }
+
+  fn sdScene(pos: vec2f) -> f32 {
+    let dist1 = sdCircle(pos, vec2f(0, 0), 0.8);
+    let distEye1 = -sdCircle(pos, vec2f(0.3, 0.2), 0.1);
+    let distEye2 = -sdCircle(pos, vec2f(-0.3, 0.2), 0.1);
+    let distMouth = -sdCircle(pos, vec2f(0, -0.3), 0.25);
+    return max(max(max(dist1, distEye1), distEye2), distMouth);
+  }
+
+  fn renderCloud(pos : vec2f) -> vec4f {
+    var dist = sdScene(pos);
+    let noise :f32 = 0;
+    dist += noise;
+    let alpha = smoothstep(0.05, -0.05, dist);
+    let baseColor = vec3f(1, 1, 1);
+    return vec4f(baseColor, alpha);
+  }
+
   @fragment
   fn fragment_main(@location(0) ndc : vec2f) -> @location(0) vec4f {
     let reso : vec2f = u.resolution;
     let minres : f32 = min(reso.x, reso.y);
     let pos = ndc * reso / minres;
-    var color = vec4f(pos, 0, 1);
+    let fgColor : vec4f = renderCloud(pos);
     let fogDir = normalize(vec2f(1, -3));
     let fogStrength = smoothstep(-0.1, 1., dot(pos, fogDir)) * 0.5;
     let fogColor = vec3f(1, 1, 1);
     let bgColor = mix(skyBlue, fogColor, fogStrength);
-    color = vec4f(bgColor, 1);
-    return color;
+    let color = mix(bgColor, fgColor.rgb, fgColor.a);
+    return vec4f(color, 1);
   }
 `;
 
