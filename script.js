@@ -60,21 +60,89 @@ const rectangleShaders = /*wgsl*/ `
     return output;
   }
 
+  
+  fn random(x: vec3f) -> f32 {
+      // x = abs(x) + 1. ;
+      var result : f32;
+      result = dot(x, vec3f(0.638234, 0.913, 0.327));
+      result = fract(result);
+      result *= 20.234;
+      result = sin(result);
+      result *= 5035.34324;
+      result = fract(result);
+      result = sin(result);
+      result *= 1102.34324;
+      result = fract(result);
+      return result;
+  }
+  fn noise(p_: vec3f) -> f32 {
+      // data value at corners
+      var p = p_;
+      let f000: f32 = random(floor(p + vec3f(0, 0, 0)));
+      let f010: f32 = random(floor(p + vec3f(0, 1, 0)));
+      let f100: f32 = random(floor(p + vec3f(1, 0, 0)));
+      let f110: f32 = random(floor(p + vec3f(1, 1, 0)));
+      let f001: f32 = random(floor(p + vec3f(0, 0, 1)));
+      let f011: f32 = random(floor(p + vec3f(0, 1, 1)));
+      let f101: f32 = random(floor(p + vec3f(1, 0, 1)));
+      let f111: f32 = random(floor(p + vec3f(1, 1, 1)));
+
+      // smoothstep polynomial (for interpolation coefficient)
+
+      p = fract(p);
+      p = p * (3. * p - 2. * p * p);
+
+      // interpolate corners
+      let fx00: f32 = mix(f000, f100, p.x);
+      let fx10: f32 = mix(f010, f110, p.x);
+      let fx01: f32 = mix(f001, f101, p.x);
+      let fx11: f32 = mix(f011, f111, p.x);
+      let fxy0: f32 = mix(fx00, fx10, p.y);
+      let fxy1: f32 = mix(fx01, fx11, p.y);
+      let fxyz: f32 = mix(fxy0, fxy1, p.z);
+
+      return fxyz;
+  }
+
+  fn fbm(p_ : vec3f) -> f32 {
+      // domain scale
+      var p = p_;
+      p = p * 15.;
+
+      var result : f32 = 0.;
+      var contrib : f32 = 1.;
+      var freqStep : f32 = 2.5;
+      var contribStep : f32 = 0.5;
+      var contribTotal : f32 = 0.;
+      const NUM_OCTAVES : u32 = 4;
+      for (var i: u32 = 0; i < NUM_OCTAVES; i++) {
+          result += noise(p) * contrib;
+          contribTotal += contrib;
+          
+          p *= freqStep;
+          contrib *= contribStep;
+      }
+      result /= contribTotal;
+      
+      return result;
+  }
+
   fn sdCircle(pos : vec2f, center : vec2f, rad : f32) -> f32 {
     return distance(pos, center) - rad; 
   }
 
   fn sdScene(pos: vec2f) -> f32 {
     let dist1 = sdCircle(pos, vec2f(0, 0), 0.8);
-    let distEye1 = -sdCircle(pos, vec2f(0.3, 0.2), 0.1);
-    let distEye2 = -sdCircle(pos, vec2f(-0.3, 0.2), 0.1);
-    let distMouth = -sdCircle(pos, vec2f(0, -0.3), 0.25);
+    let distEye1 = -sdCircle(pos, vec2f(0.3, 0.2), 0.08);
+    let distEye2 = -sdCircle(pos, vec2f(-0.3, 0.2), 0.08);
+    let distMouth = -sdCircle(pos, vec2f(0, -0.3), 0.22);
     return max(max(max(dist1, distEye1), distEye2), distMouth);
   }
 
   fn renderCloud(pos : vec2f) -> vec4f {
     var dist = sdScene(pos);
-    let noise :f32 = 0;
+    let speed = vec2f(-0.05, 0);
+    let noise :f32 = fbm(vec3f(pos + speed * u.time, u.time * 0.05)) * 0.1;
     dist += noise;
     let alpha = smoothstep(0.05, -0.05, dist);
     let baseColor = vec3f(1, 1, 1);
