@@ -1,0 +1,51 @@
+#gpu-canvas {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100%;
+    width: 100%;
+    z-index: -1;
+}
+
+#content {
+    position: relative;
+    font-family: Google Sans,Google Sans Text,Roboto,Arial,Noto Sans JP,Noto Sans KR,sans-serif;
+    z-index: 1;
+    color: #e8e840;
+    padding: 30px;
+    text-align: center;
+}
+
+#performance-overlay {
+    background-color: #201040;
+    color: #e0e0e0;
+    z-index: 10;
+    bottom: 5vmin;
+    right: 5vmin;
+    padding: 0.6em;
+    position: fixed;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: clamp(1vmin, 1rem, 3vmin);
+    border-radius: 1em;
+}
+
+#performance-overlay p {
+    margin: 0.3em;
+}
+
+h1 {
+    font-size: clamp(0rem, 5rem, 10vmin);
+    padding: 0.5rem;
+    margin: 0.5rem;
+}
+
+#file-input::file-selector-button {
+  background-color: lightyellow;
+  color: maroon;             /* White text */
+  z-index: 10;
+  cursor: pointer;
+  padding: 0.6em;
+  /* font-family: 'Courier New', Courier, monospace; */
+  font-size: clamp(1vmin, 1.5rem, 3vmin);
+  border-radius: 1em;
+}
