@@ -133,9 +133,9 @@ const rectangleShaders = /*wgsl*/ `
 
   fn sdScene(pos: vec2f) -> f32 {
     let dist1 = sdCircle(pos, vec2f(0, 0), 0.8);
-    let distEye1 = -sdCircle(pos, vec2f(0.3, 0.2), 0.08);
-    let distEye2 = -sdCircle(pos, vec2f(-0.3, 0.2), 0.08);
-    let distMouth = -sdCircle(pos, vec2f(0, -0.3), 0.22);
+    let distEye1 = -sdCircle(pos, vec2f(0.27, 0.16), 0.055);
+    let distEye2 = -sdCircle(pos, vec2f(-0.3, 0.16), 0.055);
+    let distMouth = -sdCircle(pos, vec2f(-0.04, -0.31), 0.18);
     return max(max(max(dist1, distEye1), distEye2), distMouth);
   }
 
