@@ -142,10 +142,13 @@ const rectangleShaders = /*wgsl*/ `
   fn renderCloud(pos : vec2f) -> vec4f {
     var dist = sdScene(pos);
     let speed = vec2f(-0.05, 0);
-    let noise :f32 = fbm(vec3f(pos + speed * u.time, u.time * 0.05)) * 0.1;
-    dist += noise;
+    let noise :f32 = fbm(vec3f(pos + speed * u.time, u.time * 0.05));
+    dist += (noise - 0.2) * 0.15;
     let alpha = smoothstep(0.05, -0.05, dist);
-    let baseColor = vec3f(1, 1, 1);
+    var colornoise = fbm(vec3f(pos + speed * u.time, 0));
+    colornoise = pow(colornoise, 0.5);
+    let baseColor = mix(vec3f(1, 1, 1) * 0.9, vec3f(1, 1, 1), colornoise);
+
     return vec4f(baseColor, alpha);
   }
 
