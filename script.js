@@ -1,4 +1,5 @@
 import { mat4 } from 'https://wgpu-matrix.org/dist/3.x/wgpu-matrix.module.js';
+console.log(mat4)
 
 /** @param {HTMLCanvasElement} canvas  */
 async function initWebGPU(canvas) {
@@ -320,147 +321,6 @@ async function main() {
     usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
   })
   device.queue.writeBuffer(rectangleVertexBuffer, 0, rectangleVertexBufferData);
-  
-  
-  // counter-clockwise triangle list with vertices and normals
-  // assuming x-right, y-up, and z-out (right-handed coords)
-  const boxVertexBufferData = new Float32Array([
-    // z = 0
-    0, 0, 0, 1,     0, 0, -1, 0,
-    0, 1, 0, 1,     0, 0, -1, 0,
-    1, 0, 0, 1,     0, 0, -1, 0,
-    1, 0, 0, 1,     0, 0, -1, 0,
-    0, 1, 0, 1,     0, 0, -1, 0,
-    1, 1, 0, 1,     0, 0, -1, 0,
-    // z = 1
-    0, 0, 1, 1,     0, 0, 1, 0,
-    1, 0, 1, 1,     0, 0, 1, 0,
-    0, 1, 1, 1,     0, 0, 1, 0,
-    0, 1, 1, 1,     0, 0, 1, 0,
-    1, 0, 1, 1,     0, 0, 1, 0,
-    1, 1, 1, 1,     0, 0, 1, 0,
-    // y = 0
-    0, 0, 0, 1,     0, -1, 0, 0,
-    1, 0, 0, 1,     0, -1, 0, 0,
-    0, 0, 1, 1,     0, -1, 0, 0,
-    0, 0, 1, 1,     0, -1, 0, 0,
-    1, 0, 0, 1,     0, -1, 0, 0,
-    1, 0, 1, 1,     0, -1, 0, 0,
-    // y = 1
-    0, 1, 0, 1,     0, 1, 0, 0,
-    0, 1, 1, 1,     0, 1, 0, 0,
-    1, 1, 0, 1,     0, 1, 0, 0,
-    1, 1, 0, 1,     0, 1, 0, 0,
-    0, 1, 1, 1,     0, 1, 0, 0,
-    1, 1, 1, 1,     0, 1, 0, 0,
-    // x = 0
-    0, 0, 0, 1,     -1, 0, 0, 0,
-    0, 0, 1, 1,     -1, 0, 0, 0,
-    0, 1, 0, 1,     -1, 0, 0, 0,
-    0, 1, 0, 1,     -1, 0, 0, 0,
-    0, 0, 1, 1,     -1, 0, 0, 0,
-    0, 1, 1, 1,     -1, 0, 0, 0,
-    // x = 1
-    1, 0, 0, 1,     1, 0, 0, 0,
-    1, 1, 0, 1,     1, 0, 0, 0,
-    1, 0, 1, 1,     1, 0, 0, 0,
-    1, 0, 1, 1,     1, 0, 0, 0,
-    1, 1, 0, 1,     1, 0, 0, 0,
-    1, 1, 1, 1,     1, 0, 0, 0,
-  ])
-  const boxVertexBuffer = device.createBuffer({
-    size: boxVertexBufferData.byteLength,
-    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-  })
-  device.queue.writeBuffer(boxVertexBuffer, 0, boxVertexBufferData);
-  const boxShaderModule = device.createShaderModule({
-    code: /* wgsl */`
-      struct VertexOut {
-        @builtin(position) ndcPos : vec4f,
-        @location(0) worldPos : vec3f,
-        @location(1) worldNormal : vec3f,
-        @location(2) objPos : vec3f,
-      }
-
-      struct Uniforms {
-        M : mat4x4<f32>, // object to world
-        V : mat4x4<f32>, // world to view
-        P : mat4x4<f32>, // view to NDC
-        V_inv : mat4x4<f32>, // view to world
-        time : f32,
-      }
-      @group(0) @binding(0) var<uniform> u : Uniforms;
-
-      @vertex
-      fn vertex_main(
-        @location(0) position : vec4f,
-        @location(1) normal : vec3f,
-      ) -> VertexOut {
-        let worldPos = u.M * position;
-        let worldNormal = u.M * vec4f(normal, 0);
-        var ndcPos = u.P * u.V * worldPos;
-        // ndcPos /= ndcPos.w; // Don't perform perspective divide, hardware needs the w!
-        return VertexOut(
-          ndcPos,
-          worldPos.xyz, // w should be 1
-          worldNormal.xyz, // w should be 0
-          position.xyz // w should be 0
-        );
-      }
-
-      fn max3(v: vec3f) -> f32 { return max(v.x, max(v.y, v.z)); }
-
-      fn sdBox(pos: vec3f, size: vec3f) -> f32 {
-        let allAxes = abs(pos) - size;
-        let positives = max(allAxes, vec3f(0, 0, 0));
-        let negatives = min(allAxes, vec3f(0, 0, 0));
-        return length(positives) + max3(negatives);
-      }
-
-      fn sdScene(pos: vec3f) -> f32 {
-        let boxCenter = vec3f(sin(u.time), 0, 0);
-        return sdBox(pos - boxCenter, vec3f(0.5, 0.5, 0.5));
-      }
-
-      @fragment
-      fn fragment_main(
-        @builtin(position) ndcPos : vec4f,
-        @location(0) worldPos : vec3f,
-        @location(1) worldNormal : vec3f,
-        @location(2) objPos : vec3f,
-      ) -> @location(0) vec4f {
-        var eye = vec3f(0, 0, 0); // view-space eye coords
-        eye = (u.V_inv * vec4f(eye, 1)).xyz; // world-space eye coords
-        var color = vec3f(0.8, 0.8, 1);
-
-        // Loop constants
-        let raydir : vec3f = normalize(worldPos - eye);
-        const numIter : u32 = 100;
-        const eps : f32 = 0.01;
-
-        // Loop variables
-        // var t: f32 = distance(eye, worldPos);
-        var t: f32 = 0;
-        var hit: bool = false;
-
-        for (var i: u32 = 0; i < numIter; i++) {
-          let pos = eye + raydir * t;
-          let dist = sdScene(pos);
-          if (abs(dist) < eps) {
-            hit = true;
-            break;
-          }
-          t += dist;
-        }
-
-        if (hit) {
-          color = abs(raydir);
-        }
-
-        return vec4f(color, 1);
-      }
-    `,
-  })
 
   const timeStart = performance.now() / 1000.
   let time = 0;
@@ -487,14 +347,6 @@ async function main() {
     entries: [{ binding: 0, resource: uniformBuffer }],
     layout: uniformBindGroupLayout,
   })
-
-  const boxUniformBuffer = device.createBuffer({
-    size: 16 * 4 * 4 + 16,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    label: "box-uniform-buffer"
-  })
-
-  console.log(mat4)
 
   function render() {
     // Prepare render target
@@ -540,7 +392,6 @@ async function main() {
   // TODO: Make the flow of data clearer between update and render.
   async function animationLoop() {
     // Update world state
-    const renderStartTime = performance.now()
     update()
 
     // Perform rendering work
