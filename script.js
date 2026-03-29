@@ -322,16 +322,17 @@ async function main() {
   })
   device.queue.writeBuffer(rectangleVertexBuffer, 0, rectangleVertexBufferData);
 
-  const timeStart = performance.now() / 1000.
+  let timeStart = performance.now() / 1000.
   let time = 0;
   let prevUpload = upload;
 
   function update() {
+    const now = performance.now() / 1000. // time in seconds
     if (prevUpload != upload) {
       console.log({upload})
       prevUpload = upload
+      timeStart = now // restart time to 0
     }
-    const now = performance.now() / 1000. // time in seconds
     time = now - timeStart;
   }
 
