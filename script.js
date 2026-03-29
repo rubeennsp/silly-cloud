@@ -134,22 +134,23 @@ const rectangleShaders = /*wgsl*/ `
   }
 
   fn sdScene(pos: vec2f) -> f32 {
-    let dist1 = sdCircle(pos, vec2f(0, 0), 0.8);
-    let distEye1 = -sdCircle(pos, vec2f(0.27, 0.16), 0.055);
-    let distEye2 = -sdCircle(pos, vec2f(-0.3, 0.16), 0.055);
-    let distMouth = -sdCircle(pos, vec2f(-0.04, -0.31), 0.18);
+    let dist1 = sdCircle(pos, vec2f(0, 0), 0.755);
+    let distEye1 = -sdCircle(pos, vec2f(0.27, 0.16), 0.1);
+    let distEye2 = -sdCircle(pos, vec2f(-0.3, 0.16), 0.1);
+    let distMouth = -sdCircle(pos, vec2f(-0.04, -0.31), 0.225);
     return max(max(max(dist1, distEye1), distEye2), distMouth);
   }
 
-  fn renderCloud(pos : vec2f) -> vec4f {
-    var dist = sdScene(pos);
-    let speed = vec2f(-0.1, 0);
-    let noise :f32 = fbm(vec3f(pos + speed * u.time, u.time * 0.05));
-    dist += (noise - 0.2) * 0.15;
-    let alpha = smoothstep(0.05, -0.05, dist);
-    var colornoise = fbm(vec3f(pos + speed * u.time, 0));
+  fn renderCloud(pos : vec2f, offset : vec2f) -> vec4f {
+    let localpos = pos - offset;
+    var dist = sdScene(localpos);
+    let speed = vec2f(0.06, 0);
+    let noise : f32 = fbm(vec3f((localpos  * 0.8 - speed * u.time), u.time * 0.02));
+    dist += (noise - 0.5) * 0.15;
+    let alpha = smoothstep(0.06, -0.06, dist);
+    var colornoise = fbm(vec3f(localpos - speed * u.time, 0));
     colornoise = pow(colornoise, 0.5);
-    let baseColor = mix(vec3f(1, 1, 1) * 0.9, vec3f(1, 1, 1), colornoise);
+    let baseColor = mix(vec3f(1, 1, 1) * 0.85, vec3f(1, 1, 1), colornoise);
 
     return vec4f(baseColor, alpha);
   }
@@ -159,13 +160,13 @@ const rectangleShaders = /*wgsl*/ `
     let reso : vec2f = u.resolution;
     let minres : f32 = min(reso.x, reso.y);
     let pos = ndc * reso / minres;
-    var offset = u.time * 0.2;
+    var offset = u.time * -0.2;
     let period = reso.x / minres * 5.;
     offset /= period;
     offset = fract(offset);
     offset *= period;
     offset -= period / 2.;
-    let fgColor : vec4f = renderCloud(pos + vec2f(offset, 0));
+    let fgColor : vec4f = renderCloud(pos, vec2f(offset, 0));
     let fogDir = normalize(vec2f(1, -3));
     let fogStrength = smoothstep(-0.1, 1., dot(pos, fogDir)) * 0.7;
     let fogColor = vec3f(1, 1, 1);
