@@ -24,6 +24,7 @@ async function initWebGPU(canvas) {
   canvasContext.configure({
     device,
     format: navigator.gpu.getPreferredCanvasFormat(),
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
     alphaMode: "premultiplied",
   });
 
@@ -185,19 +186,22 @@ function resizeGPUCanvas(canvas, device) {
     size: [canvas.width, canvas.height],
     format: "depth24plus",
     usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    label: "depth",
   })
 }
 
 /**
- * @param {HTMLCanvasElement} canvas
+ * @param {GPUDevice} device
  * @param {string} text
- * @returns {ImageData}
+ * @param {string} label
+ * @returns {GPUTexture}
  */
-function drawTextOnCanvas(canvas, text) {
-  const fontSize = 80
+function createTextTexture(device, text, label) {
+  const fontSize = 200
   const padding = { x: 35, y: 25 }
   const font = `bold ${fontSize}px sans-serif`
 
+  const canvas = new OffscreenCanvas(0, 0)
   const context = canvas.getContext("2d")
   context.font = font
   const textMetrics = context.measureText(text)
@@ -212,10 +216,31 @@ function drawTextOnCanvas(canvas, text) {
   context.font = font
   context.fillText(text, padding.x, canvas.height / 2)
 
-  return context.getImageData(0, 0, canvas.width, canvas.height, {
-    colorSpace: "srgb",
-    pixelFormat: "rgba-unorm8",
+  return createTextureFromCanvas(device, canvas, label)
+}
+
+/**
+ * Create a texture with contents initialized from a canvas
+ * @param {GPUDevice} device
+ * @param {OffscreenCanvas | HTMLCanvasElement} canvas
+ *
+ * @returns {GPUTexture}
+ */
+function createTextureFromCanvas(device, canvas, label) {
+  const texture = device.createTexture({
+    dimension: "2d",
+    format: navigator.gpu.getPreferredCanvasFormat(),
+    size: [canvas.width, canvas.height],
+    usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING
+           | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    label,
   })
+  device.queue.copyExternalImageToTexture(
+    { source: canvas },
+    { texture, premultipliedAlpha: true },
+    [canvas.width, canvas.height]
+  )
+  return texture
 }
 
 async function main() {
@@ -223,11 +248,6 @@ async function main() {
   /** @type {HTMLCanvasElement} */
   const canvas = document.querySelector("#gpu-canvas")
   console.log(canvas)
-
-  /** @type {HTMLCanvasElement} */
-  const tempImageCanvas = document.querySelector("#temp-image-display")
-  const tempImageData = drawTextOnCanvas(tempImageCanvas, "Hello, world!")
-  console.log(tempImageData)
 
   const perfData = {
     renderTimes: []
@@ -242,6 +262,9 @@ async function main() {
   // Init webgpu
   const { device, context } = await initWebGPU(canvas);
   console.log(device, context);
+
+  // Create text rendering texture
+  const textTexture = createTextTexture(device, "Hello, world!", "text-texture")
 
 
   // File input
@@ -422,6 +445,13 @@ async function main() {
     passEncoder.draw(6);
 
     passEncoder.end()
+
+    // debug: show texture
+    commandEncoder.copyTextureToTexture(
+      { texture: textTexture },
+      { texture: canvasTexture },
+      [Math.min(textTexture.width, canvasTexture.width), textTexture.height]
+    )
     const commandBuffer = commandEncoder.finish()
     device.queue.submit([commandBuffer])
   }

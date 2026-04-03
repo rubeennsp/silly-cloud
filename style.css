@@ -1,3 +1,7 @@
+body {
+    background-color: black;
+}
+
 #gpu-canvas {
     position: fixed;
     top: 0;
@@ -14,6 +18,7 @@
     color: #e8e840;
     padding: 30px;
     text-align: center;
+    visibility: hidden;
 }
 
 #performance-overlay {
@@ -48,8 +53,4 @@ h1 {
   /* font-family: 'Courier New', Courier, monospace; */
   font-size: clamp(1vmin, 1.5rem, 3vmin);
   border-radius: 1em;
-}
-
-#temp-image-display {
-    border: 1px solid grey;
 }
