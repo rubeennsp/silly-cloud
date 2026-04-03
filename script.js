@@ -17,7 +17,19 @@ async function initWebGPU(canvas) {
   if (!adapter) {
     throw Error("Couldn't request WebGPU adapter.");
   }
-  const device = await adapter.requestDevice();
+
+  // TODO: Only require features that are absolutely needed. For example, when
+  //       debug textures aren't used, we won't need 'bgra8unorm-storage'
+  const requiredFeatures = ['bgra8unorm-storage']
+  let device;
+  try {
+    device = await adapter.requestDevice({ requiredFeatures })
+  } catch (error) {
+    console.error(error)
+    alert(`Error: couldn't request WebGPU device with features ${requiredFeatures}`)
+    throw Error("Couldn't request WebGPU device")
+  }
+
 
   /** @type {GPUCanvasContext} */
   const canvasContext = canvas.getContext("webgpu")
@@ -243,6 +255,142 @@ function createTextureFromCanvas(device, canvas, label) {
   return texture
 }
 
+/**
+ * Calculate the SDF of a 2D image with the Jump Flooding Algorithm
+ * @param {GPUDevice} device
+ * @param {GPUTexture} srcTexture
+ */
+function calculateSDF(device, srcTexture, label) {
+  const { width, height } = srcTexture
+
+  // Create seed buffers
+
+  const seedBufferLabels = [
+    label ? `${label}-jump-flooding-seed1-buffer` : "jump-flooding-seed1-buffer",
+    label ? `${label}-jump-flooding-seed2-buffer` : "jump-flooding-seed2-buffer",
+  ]
+
+  const seedSizeBytes = 2 * 4; // the size of a vec2u (two u32 values)
+  const [seed1, seed2] = seedBufferLabels.map(label => device.createBuffer({
+    size: width * height * seedSizeBytes,
+    usage: GPUBufferUsage.STORAGE,
+    label,
+  }))
+
+  // Create SDF texture
+
+  const sdf = device.createTexture({
+    size: [width, height],
+    dimension: "2d",
+    format: "r32float",
+    usage: GPUTextureUsage.TEXTURE_BINDING,
+    label: label ? `${label}-sdf-texture` : "sdf-texture",
+  })
+
+  // Create debug texture
+  const debugTexture = device.createTexture({
+    size: [width, height],
+    dimension: "2d",
+    format: navigator.gpu.getPreferredCanvasFormat(),
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
+    label: label ? `${label}-debug-texture` : "debug-texture",
+  })
+
+  // Create compute pipeline
+
+  const tileSize = 16
+  const numTiles = [Math.ceil(width / tileSize), Math.ceil(height / tileSize)]
+  const jfaShaderModule = device.createShaderModule({
+    code: /* wgsl */`
+      struct Uniforms {
+        dims : vec2u,
+      };
+
+      @group(0) @binding(0) var<uniform> u : Uniforms;
+      @group(0) @binding(1) var<storage, read_write> dstSeed : array<vec2u>;
+      @group(0) @binding(2) var<storage, read_write> srcSeed : array<vec2u>;
+      @group(0) @binding(3) var srcTex : texture_2d<f32>;
+      @group(0) @binding(4) var debugTex : texture_storage_2d<bgra8unorm, write>;
+
+      // sentinel value for a seed that is not set
+      const NO_SEED = ~vec2u(0, 0);
+
+      @compute @workgroup_size(${tileSize}, ${tileSize})
+      fn init_seed(@builtin(global_invocation_id) gid : vec3u) {
+        if (!(gid.x < u.dims.x && gid.y < u.dims.y)) {
+          return;
+        }
+        let idx: u32 = u.dims.x * gid.y + gid.x;
+        if (textureLoad(srcTex, gid.xy, 0).a > 0.5) {
+          dstSeed[idx] = gid.xy;
+        } else {
+          dstSeed[idx] = NO_SEED;
+        }
+
+        // debug
+        var debugVal : vec4f;
+        if (all(dstSeed[idx] != NO_SEED)) {
+          let distanceFromCenter = distance(vec2f(dstSeed[idx]), vec2f(u.dims) / 2.);
+          const PI = 3.14159;
+          let brightness = sin(distanceFromCenter * 2. * PI / 8.) * 0.4 + 0.6;
+          debugVal = vec4f(brightness * vec3f(1, 1, 1), 1);
+        } else {
+          debugVal = vec4f(0.2, 0, 0, 1);
+        }
+        textureStore(debugTex, gid.xy, debugVal);
+      }
+    `,
+    label: "sdf-shader-module"
+  })
+
+  const initSeedPipeline = device.createComputePipeline({
+    compute: {
+      module: jfaShaderModule,
+      entryPoint: "init_seed",
+    },
+    layout: "auto",
+    label: "jump-flooding-init-seed-pipeline",
+  })
+
+  // Create uniform buffers
+
+  const uniformBuffer = device.createBuffer({
+    size: 8,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    label: "rectangle-uniform-buffer"
+  })
+  device.queue.writeBuffer(uniformBuffer, 0, new Uint32Array([width, height]))
+
+  const bindGroupLayout = initSeedPipeline.getBindGroupLayout(0)
+  const bindGroup = device.createBindGroup({
+    entries: [
+      { binding: 0, resource: uniformBuffer },
+      { binding: 1, resource: seed1 },
+      { binding: 3, resource: srcTexture },
+      { binding: 4, resource: debugTexture },
+    ],
+    layout: bindGroupLayout,
+    label: "sdf-bind-group",
+  })
+
+  // Run computation
+
+  const commandEncoder = device.createCommandEncoder({
+    label: "sdf-command-encoder"
+  })
+  const passEncoder = commandEncoder.beginComputePass({
+    label: label ? `${label}-sdf-compute-pass` : "sdf-compute-pass"
+  })
+  passEncoder.setPipeline(initSeedPipeline)
+  passEncoder.setBindGroup(0, bindGroup)
+  passEncoder.dispatchWorkgroups(...numTiles)
+  passEncoder.end()
+  const commandBuffer = commandEncoder.finish()
+  device.queue.submit([commandBuffer])
+
+  return { sdf, debugTexture }
+}
+
 async function main() {
   // Get DOM elements
   /** @type {HTMLCanvasElement} */
@@ -265,6 +413,7 @@ async function main() {
 
   // Create text rendering texture
   const textTexture = createTextTexture(device, "Hello, world!", "text-texture")
+  const sdfOutput = calculateSDF(device, textTexture, "text-sdf")
 
 
   // File input
@@ -446,12 +595,25 @@ async function main() {
 
     passEncoder.end()
 
-    // debug: show texture
-    commandEncoder.copyTextureToTexture(
-      { texture: textTexture },
-      { texture: canvasTexture },
-      [Math.min(textTexture.width, canvasTexture.width), textTexture.height]
-    )
+    // debug: show textures
+    function blitTexture(dstTexture, srcTexture, origin) {
+      const [originX, originY] = origin
+      const copySize = [
+        Math.min(textTexture.width, canvasTexture.width - originX),
+        Math.min(textTexture.height, canvasTexture.height - originY)
+      ]
+      if (copySize.some(size => size <= 0))
+        return
+      commandEncoder.copyTextureToTexture(
+        { texture: srcTexture },
+        { texture: dstTexture, origin },
+        copySize,
+      )
+    }
+
+    blitTexture(canvasTexture, textTexture, [5, 5])
+    blitTexture(canvasTexture, sdfOutput.debugTexture, [5, textTexture.height + 10])
+
     const commandBuffer = commandEncoder.finish()
     device.queue.submit([commandBuffer])
   }
