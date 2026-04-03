@@ -49,3 +49,7 @@ h1 {
   font-size: clamp(1vmin, 1.5rem, 3vmin);
   border-radius: 1em;
 }
+
+#temp-image-display {
+    border: 1px solid grey;
+}

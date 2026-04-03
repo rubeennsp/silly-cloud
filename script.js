@@ -188,11 +188,46 @@ function resizeGPUCanvas(canvas, device) {
   })
 }
 
+/**
+ * @param {HTMLCanvasElement} canvas
+ * @param {string} text
+ * @returns {ImageData}
+ */
+function drawTextOnCanvas(canvas, text) {
+  const fontSize = 80
+  const padding = { x: 35, y: 25 }
+  const font = `bold ${fontSize}px sans-serif`
+
+  const context = canvas.getContext("2d")
+  context.font = font
+  const textMetrics = context.measureText(text)
+  const textWidth = textMetrics.actualBoundingBoxRight + textMetrics.actualBoundingBoxLeft
+  canvas.height = fontSize + padding.y * 2
+  canvas.width = textWidth + padding.x * 2
+  context.fillStyle = "transparent"
+  context.fillRect(0, 0, canvas.width, canvas.height)
+  context.fillStyle = "white"
+  context.textBaseline = "middle"
+  context.textAlign = "start"
+  context.font = font
+  context.fillText(text, padding.x, canvas.height / 2)
+
+  return context.getImageData(0, 0, canvas.width, canvas.height, {
+    colorSpace: "srgb",
+    pixelFormat: "rgba-unorm8",
+  })
+}
+
 async function main() {
   // Get DOM elements
   /** @type {HTMLCanvasElement} */
   const canvas = document.querySelector("#gpu-canvas")
   console.log(canvas)
+
+  /** @type {HTMLCanvasElement} */
+  const tempImageCanvas = document.querySelector("#temp-image-display")
+  const tempImageData = drawTextOnCanvas(tempImageCanvas, "Hello, world!")
+  console.log(tempImageData)
 
   const perfData = {
     renderTimes: []
