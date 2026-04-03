@@ -197,15 +197,15 @@ function resizeGPUCanvas(canvas, device) {
  * @returns {GPUTexture}
  */
 function createTextTexture(device, text, label) {
-  const fontSize = 200
-  const padding = { x: 35, y: 25 }
+  const fontSize = 80
+  const padding = { x: 40, y: 40 }
   const font = `bold ${fontSize}px sans-serif`
 
   const canvas = new OffscreenCanvas(0, 0)
   const context = canvas.getContext("2d")
   context.font = font
   const textMetrics = context.measureText(text)
-  const textWidth = textMetrics.actualBoundingBoxRight + textMetrics.actualBoundingBoxLeft
+  const textWidth = textMetrics.actualBoundingBoxRight - textMetrics.actualBoundingBoxLeft
   canvas.height = fontSize + padding.y * 2
   canvas.width = textWidth + padding.x * 2
   context.fillStyle = "transparent"
