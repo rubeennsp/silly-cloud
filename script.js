@@ -209,8 +209,8 @@ function resizeGPUCanvas(canvas, device) {
  * @returns {GPUTexture}
  */
 function createTextTexture(device, text, label) {
-  const fontSize = 80
-  const padding = { x: 40, y: 40 }
+  const fontSize = 100
+  const padding = { x: 20, y: 20 }
   const font = `bold ${fontSize}px sans-serif`
 
   const canvas = new OffscreenCanvas(0, 0)
@@ -262,6 +262,7 @@ function createTextureFromCanvas(device, canvas, label) {
  */
 function calculateSDF(device, srcTexture, label) {
   const { width, height } = srcTexture
+  const steps = [32, 16, 8, 4, 2, 1, 1]
 
   // Create seed buffers
 
@@ -288,13 +289,13 @@ function calculateSDF(device, srcTexture, label) {
   })
 
   // Create debug texture
-  const debugTexture = device.createTexture({
+  const debugTextures = steps.map((step, i) => device.createTexture({
     size: [width, height],
     dimension: "2d",
     format: navigator.gpu.getPreferredCanvasFormat(),
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
-    label: label ? `${label}-debug-texture` : "debug-texture",
-  })
+    label: label ? `${label}-jump-flooding-debug-texture-${i}-${step}` : `jump-flooding-debug-texture-${i}-${step}`,
+  }))
 
   // Create compute pipeline
 
@@ -304,6 +305,7 @@ function calculateSDF(device, srcTexture, label) {
     code: /* wgsl */`
       struct Uniforms {
         dims : vec2u,
+        step : u32,
       };
 
       @group(0) @binding(0) var<uniform> u : Uniforms;
@@ -315,29 +317,77 @@ function calculateSDF(device, srcTexture, label) {
       // sentinel value for a seed that is not set
       const NO_SEED = ~vec2u(0, 0);
 
+      // get flat idx to seed buffer from global xy coords
+      fn get_idx(coord : vec2u) -> u32 {
+        return u.dims.x * coord.y + coord.x;
+      }
+
+      fn length2(v : vec2u) -> u32 {
+        return v.x * v.x + v.y * v.y;
+      }
+
       @compute @workgroup_size(${tileSize}, ${tileSize})
       fn init_seed(@builtin(global_invocation_id) gid : vec3u) {
         if (!(gid.x < u.dims.x && gid.y < u.dims.y)) {
           return;
         }
-        let idx: u32 = u.dims.x * gid.y + gid.x;
-        if (textureLoad(srcTex, gid.xy, 0).a > 0.5) {
-          dstSeed[idx] = gid.xy;
+        let pos: vec2u = gid.xy;
+        let idx: u32 = get_idx(pos);
+        if (textureLoad(srcTex, pos, 0).a > 0.5) {
+          dstSeed[idx] = pos;
         } else {
           dstSeed[idx] = NO_SEED;
         }
+      }
+
+      @compute @workgroup_size(${tileSize}, ${tileSize})
+      fn jump_flooding_pass(@builtin(global_invocation_id) gid : vec3u) {
+        if (!(gid.x < u.dims.x && gid.y < u.dims.y)) {
+          return;
+        }
+        let pos: vec2u = gid.xy;
+        let idx: u32 = get_idx(pos);
+
+        var oldSeed = srcSeed[idx];
+        var newSeed = oldSeed;
+        var newDist2 = length2(newSeed - pos);
+        for (var i : i32 = -1; i <= 1; i++) {
+          for (var j : i32 = -1; j <= 1; j++) {
+            let candidatePos = vec2i(
+              i32(pos.x) + i * i32(u.step),
+              i32(pos.y) + j * i32(u.step),
+            );
+            if (candidatePos.x < 0 || candidatePos.x >= i32(u.dims.x)
+                || candidatePos.y < 0 || candidatePos.y >= i32(u.dims.y)) {
+              continue;
+            }
+            let candidateIdx = get_idx(vec2u(candidatePos));
+            let candidateSeed = srcSeed[candidateIdx];
+            if (all(candidateSeed == NO_SEED)) {
+              continue;
+            }
+            let candidateDist2 = length2(candidateSeed - pos);
+            if (all(newSeed == NO_SEED) || candidateDist2 < newDist2) {
+              newSeed = candidateSeed;
+              newDist2 = candidateDist2;
+            }
+          }
+        }
+
+        dstSeed[idx] = newSeed;
 
         // debug
         var debugVal : vec4f;
-        if (all(dstSeed[idx] != NO_SEED)) {
-          let distanceFromCenter = distance(vec2f(dstSeed[idx]), vec2f(u.dims) / 2.);
+        if (!all(dstSeed[idx] == NO_SEED)) {
+          let dist2 = length2(dstSeed[idx] - pos);
+          let dist = sqrt(f32(dist2));
           const PI = 3.14159;
-          let brightness = sin(distanceFromCenter * 2. * PI / 8.) * 0.4 + 0.6;
+          let brightness = sin(dist * 2. * PI / 7) * 0.35 + 0.65;
           debugVal = vec4f(brightness * vec3f(1, 1, 1), 1);
         } else {
           debugVal = vec4f(0.2, 0, 0, 1);
         }
-        textureStore(debugTex, gid.xy, debugVal);
+        textureStore(debugTex, pos, debugVal);
       }
     `,
     label: "sdf-shader-module"
@@ -352,43 +402,84 @@ function calculateSDF(device, srcTexture, label) {
     label: "jump-flooding-init-seed-pipeline",
   })
 
+  const jumpFloodingPipeline = device.createComputePipeline({
+    compute: {
+      module: jfaShaderModule,
+      entryPoint: "jump_flooding_pass",
+    },
+    layout: "auto",
+    label: "jump-flooding-pass-pipeline",
+  })
+
   // Create uniform buffers
 
   const uniformBuffer = device.createBuffer({
-    size: 8,
+    size: 16,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     label: "rectangle-uniform-buffer"
   })
   device.queue.writeBuffer(uniformBuffer, 0, new Uint32Array([width, height]))
 
-  const bindGroupLayout = initSeedPipeline.getBindGroupLayout(0)
-  const bindGroup = device.createBindGroup({
+  const initSeedBindGroup = device.createBindGroup({
     entries: [
       { binding: 0, resource: uniformBuffer },
       { binding: 1, resource: seed1 },
       { binding: 3, resource: srcTexture },
-      { binding: 4, resource: debugTexture },
     ],
-    layout: bindGroupLayout,
-    label: "sdf-bind-group",
+    layout: initSeedPipeline.getBindGroupLayout(0),
+    label: "jump-flooding-init-seed-bind-group",
   })
 
-  // Run computation
+  // Run computation: jump-flooding seed initialization
 
   const commandEncoder = device.createCommandEncoder({
-    label: "sdf-command-encoder"
+    label: "jump-flooding-init-seed-command-encoder"
   })
   const passEncoder = commandEncoder.beginComputePass({
-    label: label ? `${label}-sdf-compute-pass` : "sdf-compute-pass"
+    label: label ? `${label}-jump-flooding-init-seed-compute-pass` : "jump-flooding-init-seed-compute-pass"
   })
   passEncoder.setPipeline(initSeedPipeline)
-  passEncoder.setBindGroup(0, bindGroup)
+  passEncoder.setBindGroup(0, initSeedBindGroup)
   passEncoder.dispatchWorkgroups(...numTiles)
   passEncoder.end()
   const commandBuffer = commandEncoder.finish()
   device.queue.submit([commandBuffer])
 
-  return { sdf, debugTexture }
+  // Run computation: jump-flooding passes
+
+  steps.forEach((step, i) => {
+    const dstSeedBuffer = (i % 2 == 0) ? seed2 : seed1
+    const srcSeedBuffer = (i % 2 == 0) ? seed1 : seed2
+    const bindGroup = device.createBindGroup({
+      entries: [
+        { binding: 0, resource: uniformBuffer },
+        { binding: 1, resource: dstSeedBuffer },
+        { binding: 2, resource: srcSeedBuffer },
+        // { binding: 3, resource: srcTexture },
+        { binding: 4, resource: debugTextures[i] },
+      ],
+      layout: jumpFloodingPipeline.getBindGroupLayout(0),
+      label: `jump-flooding-pass-${i}-${step}-bind-group`,
+    })
+
+    device.queue.writeBuffer(uniformBuffer, 0, new Uint32Array([width, height, step]))
+
+    const commandEncoder = device.createCommandEncoder({
+      label: "sdf-command-encoder"
+    })
+
+    const passEncoder = commandEncoder.beginComputePass({
+      label: label ? `${label}-jump-flooding-pass-compute-pass` : "jump-flooding-pass-compute-pass"
+    })
+    passEncoder.setPipeline(jumpFloodingPipeline)
+    passEncoder.setBindGroup(0, bindGroup)
+    passEncoder.dispatchWorkgroups(...numTiles)
+    passEncoder.end()
+    const commandBuffer = commandEncoder.finish()
+    device.queue.submit([commandBuffer])
+  })
+
+  return { sdf, debugTextures }
 }
 
 async function main() {
@@ -612,7 +703,10 @@ async function main() {
     }
 
     blitTexture(canvasTexture, textTexture, [5, 5])
-    blitTexture(canvasTexture, sdfOutput.debugTexture, [5, textTexture.height + 10])
+
+    sdfOutput.debugTextures.forEach((debugTexture, i) => {
+      blitTexture(canvasTexture, debugTexture, [5, 5 + (textTexture.height + 10) * (i + 1)])
+    })
 
     const commandBuffer = commandEncoder.finish()
     device.queue.submit([commandBuffer])
