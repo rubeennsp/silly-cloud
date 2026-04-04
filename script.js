@@ -350,8 +350,18 @@ function calculateSDF(device, srcTexture, label) {
         return u.dims.x * coord.y + coord.x;
       }
 
-      fn length2(v : vec2u) -> u32 {
-        return v.x * v.x + v.y * v.y;
+      // Get the squared distance between two xy coords.
+      //
+      // This is meant to be fast 32-bit computation.
+      // It *will* overflow if the distance is too big.
+      // Using f32 or u64 will alleviate the overflow problem but these 32-bit
+      // integers will be sufficient for our texture sizes.
+      //
+      fn dist2(v1 : vec2u, v2 : vec2u) -> u32 {
+        // The casts are no-ops but they're here for... clarity? Reassurance?
+        let dx = i32(v1.x) - i32(v2.x);
+        let dy = i32(v1.y) - i32(v2.y);
+        return u32(dx * dx + dy * dy);
       }
 
       @compute @workgroup_size(${tileSize}, ${tileSize})
@@ -376,7 +386,7 @@ function calculateSDF(device, srcTexture, label) {
         let pos: vec2u = gid.xy; // the current position
 
         // Read neighbor seeds to discover points on the other side of (across)
-        // the surface. Get the one that's closest to the current position.
+        // the surface. Find the one that's closest to the current position.
         var bestSeed = srcSeed[get_idx(pos)];
         for (var i : i32 = -1; i <= 1; i++) {
           for (var j : i32 = -1; j <= 1; j++) {
@@ -392,24 +402,24 @@ function calculateSDF(device, srcTexture, label) {
             }
             let neighborSeed = srcSeed[get_idx(vec2u(neighborPos))];
 
-            // Check if neighbor knows a point across the surface
-            // which could be a candidate for the best seed to output.
-            var candidateSeed : vec3u;
+            // Check neighbor to get a point on the other side of the surface
+            // to use as a candidate to challenge the current best seed.
+            var candidatePos : vec2u;
             if (neighborSeed.z != bestSeed.z) {
-              // This neighbor *is* on the other side of the surface.
-              candidateSeed = vec3u(vec2u(neighborPos), bestSeed.z);
-            } else if (all(candidateSeed.xy == NO_SEED)) {
-              // This neighbor is on the same side of the surface.
-              // And it doesn't know any points on the other side yet.
-              continue;
+              // This neighbor *itself* is on the other side of the surface.
+              candidatePos = vec2u(neighborPos);
             } else {
-              // This neighbor knows a point on the other side of the surface.
-              candidateSeed = neighborSeed;
+              // This neighbor is on the same side of the surface.
+              // Its *seed*, if it exists, is on the other side of the surface.
+              if (all(neighborSeed.xy == NO_SEED)) {
+                continue; // Didn't find candidate pos on other side of surface.
+              }
+              candidatePos = neighborSeed.xy;
             }
-            // Update best seed if this candidate seed is closer to current pos
+            // Update best seed if this candidate is closer to current pos
             if (all(bestSeed.xy == NO_SEED)
-                || length2(candidateSeed.xy - pos) < length2(bestSeed.xy - pos)) {
-              bestSeed = candidateSeed;
+                || dist2(candidatePos, pos) < dist2(bestSeed.xy, pos)) {
+              bestSeed = vec3u(candidatePos, bestSeed.z);
             }
           }
         }
@@ -421,8 +431,7 @@ function calculateSDF(device, srcTexture, label) {
         // debug
         var debugVal : vec4f;
         if (!all(bestSeed.xy == NO_SEED)) {
-          let dist2 = length2(bestSeed.xy - pos);
-          let dist = sqrt(f32(dist2));
+          let dist = sqrt(f32(dist2(bestSeed.xy, pos)));
           const PI = 3.14159;
           let brightness = (sin(dist * 2. * PI / 2.5) * 0.12 + sin(dist * 2. * PI / 9.) * 0.08) + 0.5;
           var color : vec3f;
