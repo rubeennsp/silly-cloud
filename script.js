@@ -209,8 +209,8 @@ function resizeGPUCanvas(canvas, device) {
  * @returns {GPUTexture}
  */
 function createTextTexture(device, text, label) {
-  const fontSize = 100
-  const padding = { x: 20, y: 20 }
+  const fontSize = 600
+  const padding = { x: 20, y: 0 }
   const font = `bold ${fontSize}px sans-serif`
 
   const canvas = new OffscreenCanvas(0, 0)
@@ -262,7 +262,7 @@ function createTextureFromCanvas(device, canvas, label) {
  */
 function calculateSDF(device, srcTexture, label) {
   const { width, height } = srcTexture
-  const steps = [32, 16, 8, 4, 2, 1, 1]
+  const steps = [128, 64, 32, 16, 8, 4, 2, 1, 1]
 
   // Create seed buffers
 
@@ -271,7 +271,7 @@ function calculateSDF(device, srcTexture, label) {
     label ? `${label}-jump-flooding-seed2-buffer` : "jump-flooding-seed2-buffer",
   ]
 
-  const seedSizeBytes = 2 * 4; // the size of a vec2u (two u32 values)
+  const seedSizeBytes = 4 * 4; // the stride of a vec3u array (four u32 values)
   const [seed1, seed2] = seedBufferLabels.map(label => device.createBuffer({
     size: width * height * seedSizeBytes,
     usage: GPUBufferUsage.STORAGE,
@@ -309,13 +309,24 @@ function calculateSDF(device, srcTexture, label) {
       };
 
       @group(0) @binding(0) var<uniform> u : Uniforms;
-      @group(0) @binding(1) var<storage, read_write> dstSeed : array<vec2u>;
-      @group(0) @binding(2) var<storage, read_write> srcSeed : array<vec2u>;
+      @group(0) @binding(1) var<storage, read_write> dstSeed : array<vec3u>;
+      @group(0) @binding(2) var<storage, read_write> srcSeed : array<vec3u>;
       @group(0) @binding(3) var srcTex : texture_2d<f32>;
       @group(0) @binding(4) var debugTex : texture_storage_2d<bgra8unorm, write>;
 
-      // sentinel value for a seed that is not set
+      // For pixels outside the shape, the seed's xy component stores the
+      // position of the closest known pixel that is inside the shape.
+      // For pixels inside the shape, the seed's xy component stores the
+      // position of the closest known pixel that is outside the shape.
+      //
+      // This NO_SEED value is a sentinel value indicating that no such pixel
+      // is known yet.
+      //
       const NO_SEED = ~vec2u(0, 0);
+
+      // stored in a seed's z component to indicate whether we're inside a shape
+      const OUTSIDE : u32 = 1;
+      const INSIDE : u32 = 2;
 
       // get flat idx to seed buffer from global xy coords
       fn get_idx(coord : vec2u) -> u32 {
@@ -334,9 +345,9 @@ function calculateSDF(device, srcTexture, label) {
         let pos: vec2u = gid.xy;
         let idx: u32 = get_idx(pos);
         if (textureLoad(srcTex, pos, 0).a > 0.5) {
-          dstSeed[idx] = pos;
+          dstSeed[idx] = vec3u(NO_SEED, INSIDE);
         } else {
-          dstSeed[idx] = NO_SEED;
+          dstSeed[idx] = vec3u(NO_SEED, OUTSIDE);
         }
       }
 
@@ -345,45 +356,69 @@ function calculateSDF(device, srcTexture, label) {
         if (!(gid.x < u.dims.x && gid.y < u.dims.y)) {
           return;
         }
-        let pos: vec2u = gid.xy;
-        let idx: u32 = get_idx(pos);
+        let pos: vec2u = gid.xy; // the current position
 
-        var oldSeed = srcSeed[idx];
-        var newSeed = oldSeed;
-        var newDist2 = length2(newSeed - pos);
+        // Read neighbor seeds to discover points on the other side of (across)
+        // the surface. Get the one that's closest to the current position.
+        var bestSeed = srcSeed[get_idx(pos)];
         for (var i : i32 = -1; i <= 1; i++) {
           for (var j : i32 = -1; j <= 1; j++) {
-            let candidatePos = vec2i(
+            if (i == 0 && j == 0) { continue; } // skip current position
+            // calculate neighbor's pixel coordinates
+            let neighborPos = vec2i(
               i32(pos.x) + i * i32(u.step),
               i32(pos.y) + j * i32(u.step),
             );
-            if (candidatePos.x < 0 || candidatePos.x >= i32(u.dims.x)
-                || candidatePos.y < 0 || candidatePos.y >= i32(u.dims.y)) {
-              continue;
+            if (neighborPos.x < 0 || neighborPos.x >= i32(u.dims.x)
+                || neighborPos.y < 0 || neighborPos.y >= i32(u.dims.y)) {
+              continue; // This neighbor is out-of-bounds, so skip it.
             }
-            let candidateIdx = get_idx(vec2u(candidatePos));
-            let candidateSeed = srcSeed[candidateIdx];
-            if (all(candidateSeed == NO_SEED)) {
+            let neighborSeed = srcSeed[get_idx(vec2u(neighborPos))];
+
+            // Check if neighbor knows a point across the surface
+            // which could be a candidate for the best seed to output.
+            var candidateSeed : vec3u;
+            if (neighborSeed.z != bestSeed.z) {
+              // This neighbor *is* on the other side of the surface.
+              candidateSeed = vec3u(vec2u(neighborPos), bestSeed.z);
+            } else if (all(candidateSeed.xy == NO_SEED)) {
+              // This neighbor is on the same side of the surface.
+              // And it doesn't know any points on the other side yet.
               continue;
+            } else {
+              // This neighbor knows a point on the other side of the surface.
+              candidateSeed = neighborSeed;
             }
-            let candidateDist2 = length2(candidateSeed - pos);
-            if (all(newSeed == NO_SEED) || candidateDist2 < newDist2) {
-              newSeed = candidateSeed;
-              newDist2 = candidateDist2;
+            // Update best seed if this candidate seed is closer to current pos
+            if (all(bestSeed.xy == NO_SEED)
+                || length2(candidateSeed.xy - pos) < length2(bestSeed.xy - pos)) {
+              bestSeed = candidateSeed;
             }
           }
         }
 
-        dstSeed[idx] = newSeed;
+        // Output the best seed found after checking neighbors.
+        dstSeed[get_idx(pos)] = bestSeed;
 
+        // TODO: Remove this debug output when it is no longer needed
         // debug
         var debugVal : vec4f;
-        if (!all(dstSeed[idx] == NO_SEED)) {
-          let dist2 = length2(dstSeed[idx] - pos);
+        if (!all(bestSeed.xy == NO_SEED)) {
+          let dist2 = length2(bestSeed.xy - pos);
           let dist = sqrt(f32(dist2));
           const PI = 3.14159;
-          let brightness = sin(dist * 2. * PI / 7) * 0.35 + 0.65;
-          debugVal = vec4f(brightness * vec3f(1, 1, 1), 1);
+          let brightness = (sin(dist * 2. * PI / 6.) * 0.12 + sin(dist * 2. * PI / 24.) * 0.08) + 0.5;
+          var color : vec3f;
+          if (bestSeed.z == OUTSIDE) {
+            color = vec3f(1, 0, 0);
+          } else if (bestSeed.z == INSIDE) {
+            color = vec3f(0, 0, 1);
+          } else {
+            // We should NOT see this green color
+            // because every pixel has to be either OUTSIDE or INSIDE.
+            color = vec3f(0, 1, 0);
+          }
+          debugVal = vec4f(1 - (1 - color) * (1 - brightness), 1);
         } else {
           debugVal = vec4f(0.2, 0, 0, 1);
         }
@@ -704,7 +739,7 @@ async function main() {
 
     blitTexture(canvasTexture, textTexture, [5, 5])
 
-    sdfOutput.debugTextures.forEach((debugTexture, i) => {
+    sdfOutput.debugTextures.slice(-1).forEach((debugTexture, i) => {
       blitTexture(canvasTexture, debugTexture, [5, 5 + (textTexture.height + 10) * (i + 1)])
     })
 
