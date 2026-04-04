@@ -209,8 +209,8 @@ function resizeGPUCanvas(canvas, device) {
  * @returns {GPUTexture}
  */
 function createTextTexture(device, text, label) {
-  const fontSize = 600
-  const padding = { x: 20, y: 0 }
+  const fontSize = 100
+  const padding = { x: 15, y: 15 }
   const font = `bold ${fontSize}px sans-serif`
 
   const canvas = new OffscreenCanvas(0, 0)
@@ -262,7 +262,7 @@ function createTextureFromCanvas(device, canvas, label) {
  */
 function calculateSDF(device, srcTexture, label) {
   const { width, height } = srcTexture
-  const steps = [128, 64, 32, 16, 8, 4, 2, 1, 1]
+  const steps = [64, 32, 16, 8, 4, 2, 1, 1]
 
   // Create seed buffers
 
@@ -407,7 +407,7 @@ function calculateSDF(device, srcTexture, label) {
           let dist2 = length2(bestSeed.xy - pos);
           let dist = sqrt(f32(dist2));
           const PI = 3.14159;
-          let brightness = (sin(dist * 2. * PI / 6.) * 0.12 + sin(dist * 2. * PI / 24.) * 0.08) + 0.5;
+          let brightness = (sin(dist * 2. * PI / 2.5) * 0.12 + sin(dist * 2. * PI / 9.) * 0.08) + 0.5;
           var color : vec3f;
           if (bestSeed.z == OUTSIDE) {
             color = vec3f(1, 0, 0);
