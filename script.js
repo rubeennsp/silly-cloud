@@ -19,8 +19,12 @@ async function initWebGPU(canvas) {
   }
 
   // TODO: Only require features that are absolutely needed. For example, when
-  //       debug textures aren't used, we won't need 'bgra8unorm-storage'
-  const requiredFeatures = ['bgra8unorm-storage']
+  //       debug textures aren't used, we won't need 'bgra8unorm-storage'.
+  // TODO: Check support for 'float32-filterable' and figure out fallbacks.
+  const requiredFeatures = [
+    'bgra8unorm-storage', // to use canvas textures as storage textures for debugging
+    'float32-filterable', // to use r32float textures as filtered and sampled textures
+  ]
   let device;
   try {
     device = await adapter.requestDevice({ requiredFeatures })
@@ -58,9 +62,12 @@ const rectangleShaders = /*wgsl*/ `
     resolution : vec2f,
     time : f32,
     show : f32,
+    sdfTextureRes : vec2f,
   }
 
   @group(0) @binding(0) var<uniform> u : Uniforms;
+  @group(0) @binding(1) var sdfTexture : texture_2d<f32>;
+  @group(0) @binding(2) var s : sampler;
 
   fn rot2d(time : f32) -> mat2x2<f32> {
     return mat2x2<f32>(cos(time), sin(time), -sin(time), cos(time));
@@ -146,7 +153,7 @@ const rectangleShaders = /*wgsl*/ `
     return distance(pos, center) - rad; 
   }
 
-  fn sdScene(pos: vec2f) -> f32 {
+  fn sdFaceScene(pos: vec2f) -> f32 {
     let dist1 = sdCircle(pos, vec2f(0, 0), 0.755);
     let distEye1 = -sdCircle(pos, vec2f(0.27, 0.16), 0.1);
     let distEye2 = -sdCircle(pos, vec2f(-0.3, 0.16), 0.1);
@@ -154,10 +161,16 @@ const rectangleShaders = /*wgsl*/ `
     return max(max(max(dist1, distEye1), distEye2), distMouth);
   }
 
+  fn sdScene(pos : vec2f) -> f32 {
+    // TODO: Improve how we handle scaling so it's clearer how to control it
+    var texCoords = vec2f(pos.x, -pos.y + 0.5) / u.sdfTextureRes * u.sdfTextureRes.y / 1.5;
+    return textureSample(sdfTexture, s, texCoords).r / u.sdfTextureRes.y * 1.8;
+  }
+
   fn renderCloud(pos : vec2f, offset : vec2f) -> vec4f {
     let localpos = pos - offset;
     var dist = sdScene(localpos);
-    let speed = vec2f(0.06, 0);
+    let speed = vec2f(0.04, 0);
     let noise : f32 = fbm(vec3f((localpos  * 0.8 - speed * u.time), u.time * 0.02));
     dist += (noise - 0.5) * 0.15;
     let alpha = smoothstep(0.06, -0.06, dist);
@@ -174,17 +187,19 @@ const rectangleShaders = /*wgsl*/ `
     let minres : f32 = min(reso.x, reso.y);
     let pos = ndc * reso / minres;
     var offset = u.time * -0.2;
+    offset = 0;
     let period = reso.x / minres * 5.;
     offset /= period;
     offset = fract(offset);
     offset *= period;
-    offset -= period / 2.;
+    offset -= period * 0.5;
     let fgColor : vec4f = renderCloud(pos, vec2f(offset, 0));
     let fogDir = normalize(vec2f(1, -3));
     let fogStrength = smoothstep(-0.1, 1., dot(pos, fogDir)) * 0.7;
     let fogColor = vec3f(1, 1, 1);
     let bgColor = mix(skyBlue, fogColor, fogStrength);
-    let color = mix(bgColor, fgColor.rgb, fgColor.a * u.show);
+    // let color = mix(bgColor, fgColor.rgb, fgColor.a * u.show);
+    let color = mix(bgColor, fgColor.rgb, fgColor.a);
     return vec4f(color, 1);
   }
 `;
@@ -209,16 +224,17 @@ function resizeGPUCanvas(canvas, device) {
  * @returns {GPUTexture}
  */
 function createTextTexture(device, text, label) {
-  const fontSize = 100
-  const padding = { x: 15, y: 15 }
-  const font = `bold ${fontSize}px sans-serif`
+  const fontSize = 80
+  const padding = { x: 25, y: 25 }
+  const font = `bold ${fontSize}px "Comic Sans MS"`
 
   const canvas = new OffscreenCanvas(0, 0)
   const context = canvas.getContext("2d")
   context.font = font
   const textMetrics = context.measureText(text)
   const textWidth = textMetrics.actualBoundingBoxRight - textMetrics.actualBoundingBoxLeft
-  canvas.height = fontSize + padding.y * 2
+  const textHeight = textMetrics.actualBoundingBoxAscent + textMetrics.actualBoundingBoxDescent
+  canvas.height = textHeight + padding.y * 2
   canvas.width = textWidth + padding.x * 2
   context.fillStyle = "transparent"
   context.fillRect(0, 0, canvas.width, canvas.height)
@@ -284,7 +300,7 @@ function calculateSDF(device, srcTexture, label) {
     size: [width, height],
     dimension: "2d",
     format: "r32float",
-    usage: GPUTextureUsage.TEXTURE_BINDING,
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
     label: label ? `${label}-sdf-texture` : "sdf-texture",
   })
 
@@ -312,7 +328,8 @@ function calculateSDF(device, srcTexture, label) {
       @group(0) @binding(1) var<storage, read_write> dstSeed : array<vec3u>;
       @group(0) @binding(2) var<storage, read_write> srcSeed : array<vec3u>;
       @group(0) @binding(3) var srcTex : texture_2d<f32>;
-      @group(0) @binding(4) var debugTex : texture_storage_2d<bgra8unorm, write>;
+      @group(0) @binding(4) var dstDist : texture_storage_2d<r32float, write>;
+      @group(0) @binding(5) var debugTex : texture_storage_2d<bgra8unorm, write>;
 
       // For pixels outside the shape, the seed's xy component stores the
       // position of the closest known pixel that is inside the shape.
@@ -424,6 +441,23 @@ function calculateSDF(device, srcTexture, label) {
         }
         textureStore(debugTex, pos, debugVal);
       }
+
+      @compute @workgroup_size(${tileSize}, ${tileSize})
+      fn write_sdf_output(@builtin(global_invocation_id) gid : vec3u) {
+        if (!(gid.x < u.dims.x && gid.y < u.dims.y)) {
+          return;
+        }
+        let pos: vec2u = gid.xy; // the current position
+
+        let seed = srcSeed[get_idx(pos)];
+        var sign : f32 = 1.;
+        if (seed.z == INSIDE) {
+          sign = -1;
+        }
+        let unsignedDist: f32 = length(vec2f(seed.xy) - vec2f(pos)) - 0.5;
+
+        textureStore(dstDist, pos, vec4f(sign * unsignedDist, 0, 0, 0));
+      }
     `,
     label: "sdf-shader-module"
   })
@@ -444,6 +478,15 @@ function calculateSDF(device, srcTexture, label) {
     },
     layout: "auto",
     label: "jump-flooding-pass-pipeline",
+  })
+
+  const sdfOutputPipeline = device.createComputePipeline({
+    compute: {
+      module: jfaShaderModule,
+      entryPoint: "write_sdf_output",
+    },
+    layout: "auto",
+    label: "sdf-output-pipeline",
   })
 
   // Create uniform buffers
@@ -482,16 +525,20 @@ function calculateSDF(device, srcTexture, label) {
 
   // Run computation: jump-flooding passes
 
+  /** @type {GPUTexture} */
+  let lastSeedBuffer;
+
   steps.forEach((step, i) => {
     const dstSeedBuffer = (i % 2 == 0) ? seed2 : seed1
     const srcSeedBuffer = (i % 2 == 0) ? seed1 : seed2
+    lastSeedBuffer = dstSeedBuffer
+
     const bindGroup = device.createBindGroup({
       entries: [
         { binding: 0, resource: uniformBuffer },
         { binding: 1, resource: dstSeedBuffer },
         { binding: 2, resource: srcSeedBuffer },
-        // { binding: 3, resource: srcTexture },
-        { binding: 4, resource: debugTextures[i] },
+        { binding: 5, resource: debugTextures[i] },
       ],
       layout: jumpFloodingPipeline.getBindGroupLayout(0),
       label: `jump-flooding-pass-${i}-${step}-bind-group`,
@@ -500,7 +547,7 @@ function calculateSDF(device, srcTexture, label) {
     device.queue.writeBuffer(uniformBuffer, 0, new Uint32Array([width, height, step]))
 
     const commandEncoder = device.createCommandEncoder({
-      label: "sdf-command-encoder"
+      label: "jump-flooding-pass-command-encoder"
     })
 
     const passEncoder = commandEncoder.beginComputePass({
@@ -513,6 +560,35 @@ function calculateSDF(device, srcTexture, label) {
     const commandBuffer = commandEncoder.finish()
     device.queue.submit([commandBuffer])
   })
+
+  // Run compute shader: write to SDF output texture
+
+  {
+    const bindGroup = device.createBindGroup({
+      entries: [
+        { binding: 0, resource: uniformBuffer },
+        { binding: 2, resource: lastSeedBuffer },
+        { binding: 4, resource: sdf },
+      ],
+      layout: sdfOutputPipeline.getBindGroupLayout(0),
+      label: `sdf-output-bind-group`,
+    })
+
+    device.queue.writeBuffer(uniformBuffer, 0, new Uint32Array([width, height]))
+
+    const commandEncoder = device.createCommandEncoder({
+      label: 'sdf-output-command-encoder'
+    })
+    const passEncoder = commandEncoder.beginComputePass({
+      label: 'sdf-output-compute-pass'
+    })
+    passEncoder.setPipeline(sdfOutputPipeline)
+    passEncoder.setBindGroup(0, bindGroup)
+    passEncoder.dispatchWorkgroups(...numTiles)
+    passEncoder.end()
+    const commandBuffer = commandEncoder.finish()
+    device.queue.submit([commandBuffer])
+  }
 
   return { sdf, debugTextures }
 }
@@ -538,7 +614,7 @@ async function main() {
   console.log(device, context);
 
   // Create text rendering texture
-  const textTexture = createTextTexture(device, "Hello, world!", "text-texture")
+  const textTexture = createTextTexture(device, "Hello, SillyCloud!", "text-texture")
   const sdfOutput = calculateSDF(device, textTexture, "text-sdf")
 
 
@@ -670,17 +746,19 @@ async function main() {
     time = now - timeStart;
   }
 
-  // Create uniform buffer
-  const uniformBuffer = device.createBuffer({
-    size: 16,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    label: "rectangle-uniform-buffer"
+  // Create texture sampler for sdf
+  const sdfSampler = device.createSampler({
+    label: 'sdf-sampler',
+    magFilter: "linear",
+    minFilter: "linear",
+    mipmapFilter: "linear",
   })
 
-  const uniformBindGroupLayout = rectanglePipeline.getBindGroupLayout(0)
-  const uniformBindGroup = device.createBindGroup({
-    entries: [{ binding: 0, resource: uniformBuffer }],
-    layout: uniformBindGroupLayout,
+  // Create uniform buffer
+  const uniformBuffer = device.createBuffer({
+    size: 24,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    label: "rectangle-uniform-buffer"
   })
 
   function render() {
@@ -693,10 +771,24 @@ async function main() {
       canvas.height,
       time,
       upload ? 1.0 : 0.0,
+      sdfOutput.sdf.width,
+      sdfOutput.sdf.height,
     ]))
 
+    // Create bind group
+    const uniformBindGroup = device.createBindGroup({
+      entries: [
+        { binding: 0, resource: uniformBuffer },
+        { binding: 1, resource: sdfOutput.sdf },
+        { binding: 2, resource: sdfSampler },
+      ],
+      layout: rectanglePipeline.getBindGroupLayout(0),
+    })
+
     // Record commands and submit
-    const commandEncoder = device.createCommandEncoder()
+    const commandEncoder = device.createCommandEncoder({
+      label: "rectangle-command-encoder",
+    })
     const passEncoder = commandEncoder.beginRenderPass({
       colorAttachments: [
         {
